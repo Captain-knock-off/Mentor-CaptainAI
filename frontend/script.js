@@ -11,17 +11,8 @@
    CONFIGURATION
 ========================================================= */
 
-/*
-    Local backend.
 
-    Frontend:
-    http://127.0.0.1:5500
-
-    Backend:
-    http://127.0.0.1:8000
-*/
-
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = "https://mentor-captainai.onrender.com";
 
 
 /* =========================================================
@@ -1358,12 +1349,6 @@ function initialize() {
     );
 
 
-    /*
-        MathJax itself may still be loading.
-
-        Wait until the browser finishes loading
-        everything, then report its state.
-    */
 
     window.addEventListener(
         "load",
