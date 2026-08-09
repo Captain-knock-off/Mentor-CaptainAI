@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="Mentor.CaptainAI - Learn Fast. Understand Better."
+    >
+
+    <title>Mentor.CaptainAI</title>
+
+
+    <!-- =====================================================
+         CSS
+    ====================================================== -->
+
+    <link
+        rel="stylesheet"
+        href="style.css"
+    >
+
+
+    <!-- =====================================================
+         MARKED.JS
+         Converts AI Markdown into HTML.
+    ====================================================== -->
+
+    <script
+        src="https://cdn.jsdelivr.net/npm/marked/marked.min.js">
+    </script>
+
+
+    <!-- =====================================================
+         MATHJAX CONFIGURATION
+
+         IMPORTANT:
+         This MUST appear before MathJax itself.
+    ====================================================== -->
+
+    <script>
+
+        window.MathJax = {
+
+            tex: {
+
+                /*
+                    Inline math:
+
+                    $x$
+
+                    or
+
+                    \(x\)
+                */
+
+                inlineMath: [
+                    ['$', '$'],
+                    ['\\(', '\\)']
+                ],
+
+
+                /*
+                    Display math:
+
+                    $$ ... $$
+                */
+
+                displayMath: [
+                    ['$$', '$$']
+                ]
+
+            },
+
+
+            options: {
+
+                /*
+                    Do not try to process code blocks
+                    or normal HTML elements that contain
+                    programming/text content.
+                */
+
+                skipHtmlTags: [
+                    'script',
+                    'noscript',
+                    'style',
+                    'textarea',
+                    'pre',
+                    'code'
+                ]
+
+            },
+
+
+            startup: {
+
+                /*
+                    We manually call MathJax after
+                    inserting each AI response.
+                */
+
+                typeset: false
+
+            }
+
+        };
+
+    </script>
+
+
+    <!-- =====================================================
+         MATHJAX
+    ====================================================== -->
+
+    <script
+        src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+    </script>
+
+</head>
+
+
+<body>
+
+
+    <!-- =====================================================
+         APPLICATION
+    ====================================================== -->
+
+    <div class="app">
+
+
+        <!-- =================================================
+             SIDEBAR
+        ================================================== -->
+
+        <aside class="sidebar">
+
+
+            <!-- LOGO -->
+
+            <div class="sidebar-logo">
+
+                <span class="mentor">
+                    Mentor.
+                </span>
+
+                <span class="captain">
+                    CaptainAI
+                </span>
+
+            </div>
+
+
+            <!-- NEW CHAT -->
+
+            <button
+                class="new-chat-btn"
+                type="button"
+                onclick="newChat()"
+            >
+                + New Chat
+            </button>
+
+
+            <!-- CLEAR CHATS -->
+
+            <button
+                class="clear-btn"
+                type="button"
+                onclick="confirmClearChats()"
+            >
+                Clear Chats
+            </button>
+
+
+            <!-- CHAT HISTORY -->
+
+            <div
+                id="chat-history"
+                class="chat-history"
+            ></div>
+
+        </aside>
+
+
+        <!-- =================================================
+             MAIN CHAT
+        ================================================== -->
+
+        <main class="chat-container">
+
+
+            <!-- HEADER -->
+
+            <header class="header">
+
+                <h1>
+
+                    <span class="mentor">
+                        Mentor.
+                    </span>
+
+                    CaptainAI
+
+                </h1>
+
+
+                <p>
+                    Learn Fast. Understand Better.
+                </p>
+
+            </header>
+
+
+            <!-- =================================================
+                 CHAT BOX
+            ================================================== -->
+
+            <section
+                id="chat-box"
+                class="chat-box"
+                aria-live="polite"
+            ></section>
+
+
+            <!-- =================================================
+                 INPUT
+            ================================================== -->
+
+            <div class="input-area">
+
+                <input
+                    type="text"
+                    id="user-input"
+                    placeholder="Ask Mentor.CaptainAI anything..."
+                    autocomplete="off"
+                    maxlength="5000"
+                >
+
+
+                <button
+                    id="send-button"
+                    type="button"
+                    onclick="sendMessage()"
+                >
+                    Send
+                </button>
+
+            </div>
+
+
+            <!-- =================================================
+                 FOOTER
+            ================================================== -->
+
+            <footer class="footer">
+
+                <p>
+
+                    Built by Thirukarthikeyan H S.
+
+                    Open for public testing.
+                    Expect bugs. WIP.
+
+                    <span>•</span>
+
+                    Feedback:
+
+                    <a href="mailto:89brats@gmail.com">
+                        89brats@gmail.com
+                    </a>
+
+                </p>
+
+            </footer>
+
+        </main>
+
+    </div>
+
+
+    <!-- =====================================================
+         YOUR JAVASCRIPT
+    ====================================================== -->
+
+    <script src="script.js"></script>
+
+</body>
+
+</html>

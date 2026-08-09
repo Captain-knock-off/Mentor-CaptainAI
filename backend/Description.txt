@@ -1,0 +1,4 @@
+CaptainAI is an AI-powered learning assistant designed to teach rather than replace critical thinking. Instead of simply generating answers, it guides users through concepts, summarizes information intelligently, and encourages active learning using interactive explanations
+
+
+Credits: Thirukarthikeyan H S
