@@ -1,577 +1,293 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from __future__ import annotations
+
+import base64
+import io
+import os
+import threading
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
 
 import requests
-import os
 from dotenv import load_dotenv
-
-
-# ============================================================
-# ENVIRONMENT
-# ============================================================
+from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from docx import Document
+from openpyxl import load_workbook
+from pypdf import PdfReader
+from pptx import Presentation
 
 load_dotenv()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TEXT_MODEL = os.getenv("TEXT_MODEL", "openai/gpt-oss-120b")
+VISION_MODEL = os.getenv("VISION_MODEL", "qwen/qwen3.6-27b")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_FILES_PER_SESSION = 10
+MAX_IMAGES_PER_REQUEST = 3
+MAX_HISTORY_MESSAGES = 24
+MAX_DOCUMENT_CHARS = 120_000
 
-if not GROQ_API_KEY:
-    print("WARNING: GROQ_API_KEY is not set.")
+ALLOWED_EXTENSIONS = {"txt","md","markdown","csv","json","py","js","ts","html","css","xml","yaml","yml","log","ini","toml","sql","java","c","cpp","h","hpp","jsx","tsx","sh","bat","ps1","env","rtf","pdf","docx","pptx","xlsx","png","jpg","jpeg","webp","gif"}
 
+SYSTEM_PROMPT = """
+You are Mentor.CaptainAI, a modern AI tutor for students.
 
-# ============================================================
-# FASTAPI
-# ============================================================
+Your job is to help the student UNDERSTAND, not merely dump an answer.
 
-app = FastAPI(
-    title="Mentor.CaptainAI API",
-    version="1.0.0"
-)
+TEACHING:
+- Explain naturally and clearly.
+- Match the student's likely level.
+- Start simple, then add depth when useful.
+- Break difficult problems into logical steps.
+- Explain what formulas mean and define symbols/units.
+- Use small examples when they improve understanding.
+- Prefer teaching over unexplained final answers.
+- Never reveal private chain-of-thought. Give concise reasoning and useful steps instead.
 
+STYLE:
+- Smart, calm, slightly casual human tutor.
+- Concise for easy questions, detailed for difficult questions.
+- Avoid customer-support language and repetitive canned greetings.
+- Do not ask "How can I help?" after every greeting.
+- Use Markdown naturally.
 
-# ============================================================
-# CORS
-# ============================================================
+MATH:
+- Use LaTeX.
+- Display equations with $$ ... $$ and inline equations with $ ... $.
+- Keep delimiters balanced.
+- Explain important symbols and units.
+
+FILES:
+- Treat attached files as source material.
+- Never invent facts that are not present in an attachment.
+- Teach from extracted document content.
+- For images, analyze only what is actually visible.
+- Say what is missing if a file is unreadable/incomplete.
+"""
+
+app = FastAPI(title="Mentor.CaptainAI API", version="5.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+        "https://mentor-captainai.89brats.workers.dev",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
+history_lock = threading.Lock()
+conversation_history: dict[str, list[dict[str, str]]] = defaultdict(list)
+upload_counts: dict[str, int] = defaultdict(int)
+
+
+def ext(name: str) -> str:
+    return Path(name).suffix.lower().lstrip(".")
+
+
+def safe_name(name: str | None) -> str:
+    return Path(name or "attachment").name[:180]
+
+
+def read_text(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+def extract_document(name: str, data: bytes) -> str:
+    e = ext(name)
+    if e in {"txt","md","markdown","csv","json","py","js","ts","html","css","xml","yaml","yml","log","ini","toml","sql","java","c","cpp","h","hpp","jsx","tsx","sh","bat","ps1","env","rtf"}:
+        return read_text(data)
+    if e == "pdf":
+        reader = PdfReader(io.BytesIO(data))
+        return "\n\n".join(f"[PDF page {i}]\n{page.extract_text() or ''}" for i, page in enumerate(reader.pages, 1))
+    if e == "docx":
+        doc = Document(io.BytesIO(data))
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for n, table in enumerate(doc.tables, 1):
+            parts.append(f"[DOCX table {n}]\n" + "\n".join(" | ".join(c.text.strip() for c in row.cells) for row in table.rows))
+        return "\n\n".join(parts) or "[Empty DOCX]"
+    if e == "pptx":
+        prs = Presentation(io.BytesIO(data))
+        parts = []
+        for i, slide in enumerate(prs.slides, 1):
+            texts = [shape.text.strip() for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
+            parts.append(f"[Slide {i}]\n" + "\n".join(texts))
+        return "\n\n".join(parts) or "[Empty PPTX]"
+    if e == "xlsx":
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        parts = []
+        for sheet in wb.worksheets:
+            rows = []
+            for row in sheet.iter_rows(values_only=True):
+                vals = ["" if v is None else str(v) for v in row]
+                if any(vals):
+                    rows.append(" | ".join(vals))
+                if len(rows) >= 500:
+                    break
+            parts.append(f"[Worksheet: {sheet.title}]\n" + "\n".join(rows))
+        return "\n\n".join(parts) or "[Empty XLSX]"
+    return ""
+
+
+def image_data_url(name: str, data: bytes) -> str:
+    mime = {"png":"image/png","jpg":"image/jpeg","jpeg":"image/jpeg","webp":"image/webp","gif":"image/gif"}.get(ext(name), "application/octet-stream")
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def get_history(session_id: str) -> list[dict[str, str]]:
+    with history_lock:
+        return list(conversation_history.get(session_id, [])[-MAX_HISTORY_MESSAGES:])
+
+
+def save_turn(session_id: str, user: str, assistant: str) -> None:
+    with history_lock:
+        conversation_history[session_id].extend([
+            {"role":"user","content":user},
+            {"role":"assistant","content":assistant},
+        ])
+        conversation_history[session_id] = conversation_history[session_id][-MAX_HISTORY_MESSAGES:]
+
+
+def api_error(response: requests.Response) -> str:
+    try:
+        body = response.json()
+        return body.get("error", {}).get("message") or body.get("message") or response.text or f"HTTP {response.status_code}"
+    except ValueError:
+        return response.text or f"HTTP {response.status_code}"
+
+
+def call_groq(session_id: str, user_text: str, docs: str, images: list[dict[str, Any]]) -> tuple[str, str]:
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is not configured on the server.")
+
+    prompt = user_text.strip() or "Please inspect the attached file(s) and teach me what they contain."
+    if docs.strip():
+        prompt += "\n\nATTACHED SOURCE MATERIAL:\n" + docs[:MAX_DOCUMENT_CHARS]
+
+    messages: list[dict[str, Any]] = [{"role":"system","content":SYSTEM_PROMPT}]
+    messages.extend(get_history(session_id))
+
+    model = VISION_MODEL if images else TEXT_MODEL
+    if images:
+        content: list[dict[str, Any]] = [{"type":"text","text":prompt}]
+        content.extend(images)
+        messages.append({"role":"user","content":content})
+    else:
+        messages.append({"role":"user","content":prompt})
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1800,
+    }
+    if model.startswith("openai/gpt-oss"):
+        payload["reasoning_effort"] = "medium"
+
+    response = requests.post(
+        GROQ_URL,
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type":"application/json"},
+        json=payload,
+        timeout=120,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(api_error(response))
+    try:
+        answer = response.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise RuntimeError("Groq returned an unexpected response.") from exc
+    return str(answer).strip(), model
 
-# ============================================================
-# REQUEST MODEL
-# ============================================================
-
-class ChatRequest(BaseModel):
-    text: str
-    mode: str = "normal"
-    session_id: str = "default"
-
-
-# ============================================================
-# SYSTEM PROMPT
-# ============================================================
-
-SYSTEM_PROMPT = r"""
-You are Mentor.CaptainAI.
-
-You are a modern AI tutor and study assistant.
-
-Your purpose is to help students understand concepts quickly,
-clearly, and accurately.
-
-============================================================
-CORE PERSONALITY
-============================================================
-
-- Speak naturally.
-- Sound like a smart human tutor.
-- Be calm.
-- Be concise.
-- Be friendly without being overly enthusiastic.
-- Be slightly casual when appropriate.
-- Be confident but do not pretend to know something you do not know.
-- Explain things in a student-friendly way.
-
-Do NOT sound like:
-
-- customer support
-- a corporate assistant
-- a therapist
-- a motivational speaker
-- a textbook copied word-for-word
-- a robotic chatbot
-
-============================================================
-RESPONSE STYLE
-============================================================
-
-Keep answers reasonably concise.
-
-Do not automatically produce huge explanations.
-
-For simple questions:
-
-- Give the direct answer.
-- Add a short explanation if useful.
-
-For educational questions:
-
-- Explain the concept.
-- Give the important formula when relevant.
-- Explain what the symbols mean.
-- Give a small example when useful.
-
-Use headings only when they genuinely improve readability.
-
-Use bullet points when they make information easier to scan.
-
-Do not turn every answer into a large list.
-
-Do not repeat the user's question unnecessarily.
-
-Do not end every answer with:
-
-"How can I help?"
-
-"Is there anything else?"
-
-"How's your day going?"
-
-"Would you like me to..."
-
-Avoid unnecessary follow-up questions.
-
-============================================================
-IMPORTANT GREETING RULE
-============================================================
-
-Do NOT say:
-
-"How's your day going so far?"
-
-Do NOT repeatedly ask the user about their day.
-
-If the user says:
-
-"hi"
-"hello"
-"hey"
-"yo"
-
-respond naturally and briefly.
-
-Examples:
-
-"Hey! What's up?"
-
-"Hey 👋"
-
-"Hello!"
-
-Do not turn a simple greeting into a customer-support conversation.
-
-============================================================
-IDENTITY
-============================================================
-
-If asked who you are, say that you are Mentor.CaptainAI,
-an AI tutor and assistant designed to help students learn
-concepts, formulas, problem-solving methods, and technical topics.
-
-Do not give a giant biography.
-
-============================================================
-MATH AND SCIENCE
-============================================================
-
-When explaining mathematics, physics, chemistry, engineering,
-or other technical subjects:
-
-- Be mathematically accurate.
-- Explain symbols clearly.
-- Use proper notation.
-- Prefer LaTeX for mathematical expressions.
-
-============================================================
-LATEX RULES
-============================================================
-
-The frontend supports MathJax.
-
-ALWAYS use LaTeX for mathematical equations.
-
-NEVER say that you cannot render LaTeX.
-
-NEVER say that you cannot display formulas.
-
-NEVER provide links to external equation renderers.
-
-For standalone equations, use:
-
-$$
-equation
-$$
-
-For inline mathematics, use:
-
-$equation$
-
-Examples:
-
-$$
-F = G\frac{m_1m_2}{r^2}
-$$
-
-$$
-V = IR
-$$
-
-$$
-m = \frac{y_2-y_1}{x_2-x_1}
-$$
-
-Do not unnecessarily escape underscores.
-
-Correct:
-
-$m_1$
-
-Incorrect:
-
-$m\_1$
-
-Correct:
-
-$$
-F = G\frac{m_1m_2}{r^2}
-$$
-
-Incorrect:
-
-$$
-F = G ,\frac{m\_1m\_2}{r^2}
-$$
-
-Do not put normal explanatory sentences inside a LaTeX block.
-
-============================================================
-FORMULA EXPLANATIONS
-============================================================
-
-When the user asks for a formula:
-
-1. Give the formula.
-2. Explain each symbol.
-3. Explain what the formula means.
-4. Mention important relationships or dependencies.
-5. Give a tiny example only when useful.
-
-Example structure:
-
-## Gravity Formula
-
-$$
-F = G\frac{m_1m_2}{r^2}
-$$
-
-Where:
-
-- $F$ = gravitational force
-- $G$ = gravitational constant
-- $m_1$ and $m_2$ = masses
-- $r$ = distance between their centers
-
-The force increases with mass and decreases with the
-square of the distance.
-
-Do not over-explain simple formulas.
-
-============================================================
-CONCEPT EXPLANATIONS
-============================================================
-
-When the user asks:
-
-"explain gravity"
-
-start with the concept.
-
-Do not immediately dump equations unless they are useful.
-
-When the user asks:
-
-"formula of gravity"
-
-focus on the formula.
-
-When the user asks:
-
-"explain gravity formula"
-
-give both the formula and explanation.
-
-============================================================
-HOMEWORK / LEARNING
-============================================================
-
-If the user appears to be doing homework:
-
-- Teach the method.
-- Explain the reasoning.
-- Do not unnecessarily dump a final answer without explanation.
-- Help the student understand how to solve similar problems.
-
-============================================================
-MARKDOWN
-============================================================
-
-Markdown is supported.
-
-Use:
-
-- headings
-- bold
-- bullet points
-- numbered lists
-- code blocks
-
-when useful.
-
-Do not over-format every response.
-
-============================================================
-CONVERSATIONAL MEMORY
-============================================================
-
-Use the conversation information supplied to you in the request.
-
-Do not invent previous conversations.
-
-If no previous context is supplied, answer the current question normally.
-
-============================================================
-FINAL BEHAVIOR
-============================================================
-
-Your goal is:
-
-Learn fast.
-Understand better.
-
-Be useful.
-
-Be concise.
-
-Be natural.
-
-Teach clearly.
-
-Do not sound robotic.
-
-Do not use unnecessary filler.
-GREETING BEHAVIOR:
-
-When the user sends a simple greeting such as:
-"hi", "hello", "hey", "yo", "sup", "morning", or similar:
-
-- Respond naturally and briefly.
-- Do NOT always respond with "Hey".
-- Do NOT repeat the same greeting response in consecutive messages.
-- Vary the wording naturally.
-- Match the user's style and energy.
-- "hi" does not require the same response as "hello".
-- Casual greetings can receive casual responses.
-- Do not turn a simple greeting into a long introduction.
-- Do not ask "How's your day going so far?" unless the user actually gives context suggesting they want that conversation.
-- Do not say "How can I help you?" after every greeting.
-- Do not use an emoji in every greeting.
-- Emojis are optional and should be used sparingly.
-
-Examples of acceptable responses:
-
-User: "hi"
-Assistant: "Hey! What's up?"
-
-User: "hello"
-Assistant: "Hello! 👋"
-
-User: "yo"
-Assistant: "Yo! What's good?"
-
-User: "sup"
-Assistant: "What's up?"
-
-User: "hey"
-Assistant: "Hey! How's it going?"
-
-These are examples, NOT fixed responses.
-Do not copy these responses mechanically.
-Generate a natural response appropriate to the user's exact message.
-
-IMPORTANT:
-Never fall into a repetitive greeting pattern.
-If the user sends multiple greetings in a row, vary your response instead of repeating yourself.
-
-If the user points out that you are repeating greetings, acknowledge it naturally and change your behavior. Do not give a long explanation about your design or programming.
-BEHAVIOR PRIORITY:
-
-Follow the instructions in this system prompt consistently.
-Do not fall back to generic assistant behavior when responding to common messages.
-Do not use canned customer-support responses.
-Do not repeatedly use phrases simply because they worked in a previous response.
-"""
-
-
-# ============================================================
-# ROOT
-# ============================================================
 
 @app.get("/")
 async def root():
-    return {
-        "status": "online",
-        "service": "Mentor.CaptainAI",
-        "message": "Backend is running."
-    }
+    return {"status":"online","service":"Mentor.CaptainAI","version":"5.0.0","message":"Backend is running."}
 
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "groq_configured": bool(GROQ_API_KEY)
-    }
+    return {"status":"ok","service":"Mentor.CaptainAI"}
 
-
-# ============================================================
-# CHAT
-# ============================================================
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
+async def chat(request: Request):
+    """Accept both the old JSON contract and the new multipart file-upload contract."""
+    content_type = request.headers.get("content-type", "").lower()
+    text = ""
+    session_id = "default"
+    files: list[UploadFile] = []
 
-    if not req.text.strip():
-        return {
-            "response": "Please enter a message."
-        }
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        text = str(form.get("text") or "")
+        session_id = str(form.get("session_id") or "default")
+        for value in form.getlist("files"):
+            if isinstance(value, UploadFile):
+                files.append(value)
+    elif content_type.startswith("application/json"):
+        body = await request.json()
+        text = str(body.get("text") or "")
+        session_id = str(body.get("session_id") or "default")
+    else:
+        raise HTTPException(415, "Use application/json or multipart/form-data.")
 
-    if not GROQ_API_KEY:
-        return {
-            "response": "Server configuration error: GROQ_API_KEY is missing."
-        }
+    text = text.strip()[:5000]
+    session_id = session_id.strip()[:128] or "default"
+    current = upload_counts[session_id]
+
+    if current + len(files) > MAX_FILES_PER_SESSION:
+        raise HTTPException(429, f"This chat has reached the {MAX_FILES_PER_SESSION}-file upload limit.")
+    if not text and not files:
+        raise HTTPException(422, "Message or attachment required.")
+
+    docs: list[str] = []
+    images: list[dict[str, Any]] = []
+    names: list[str] = []
+
+    for upload in files:
+        name = safe_name(upload.filename)
+        e = ext(name)
+        if e not in ALLOWED_EXTENSIONS:
+            raise HTTPException(415, f"Unsupported file type: {name}")
+        data = await upload.read()
+        if len(data) > MAX_FILE_SIZE:
+            raise HTTPException(413, f"{name} exceeds the 10 MB file limit.")
+        names.append(name)
+        if e in {"png","jpg","jpeg","webp","gif"}:
+            if len(images) >= MAX_IMAGES_PER_REQUEST:
+                raise HTTPException(400, f"Only {MAX_IMAGES_PER_REQUEST} images may be attached to one message.")
+            images.append({"type":"image_url","image_url":{"url":image_data_url(name, data)}})
+        else:
+            docs.append(f"--- FILE: {name} ---\n{extract_document(name, data)}\n--- END FILE: {name} ---")
+
+    history_user = text or "Please inspect the attached file(s)."
+    if names:
+        history_user += "\n\nAttached files: " + ", ".join(names)
 
     try:
+        answer, model_used = call_groq(session_id, text, "\n\n".join(docs), images)
+    except requests.Timeout as exc:
+        raise HTTPException(504, "The AI service timed out. Please try again.") from exc
+    except requests.RequestException as exc:
+        raise HTTPException(502, "The AI service could not be reached.") from exc
+    except RuntimeError as exc:
+        message = str(exc)
+        if "blocked at the project level" in message.lower():
+            message += " Enable the configured VISION_MODEL in your Groq project, or set VISION_MODEL to another permitted vision model."
+        raise HTTPException(502, message) from exc
 
-        response = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
+    save_turn(session_id, history_user, answer)
+    upload_counts[session_id] = current + len(files)
 
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
-
-            json={
-                "model": "openai/gpt-oss-120b",
-
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": req.text
-                    }
-                ],
-
-                "temperature": 0.4,
-                "max_completion_tokens": 700
-            },
-
-            timeout=60
-        )
-
-        print(
-            f"Groq status: {response.status_code}"
-        )
-
-        # ----------------------------------------------------
-        # GROQ ERROR
-        # ----------------------------------------------------
-
-        if response.status_code != 200:
-
-            print(
-                "Groq API error:",
-                response.text
-            )
-
-            try:
-                error_data = response.json()
-
-                error_message = (
-                    error_data
-                    .get("error", {})
-                    .get("message", "Unknown Groq API error.")
-                )
-
-            except Exception:
-                error_message = "Unknown Groq API error."
-
-            return {
-                "response": f"AI service error: {error_message}"
-            }
-
-
-        # ----------------------------------------------------
-        # PARSE RESPONSE
-        # ----------------------------------------------------
-
-        data = response.json()
-
-        if "choices" not in data:
-            print("Invalid Groq response:", data)
-
-            return {
-                "response": "The AI returned an invalid response."
-            }
-
-
-        if not data["choices"]:
-            return {
-                "response": "The AI returned no response."
-            }
-
-
-        message = data["choices"][0].get("message", {})
-
-        reply = message.get("content")
-
-
-        if not reply:
-            return {
-                "response": "The AI returned an empty response."
-            }
-
-
-        print("AI response generated successfully.")
-
-        return {
-            "response": reply
-        }
-
-
-    except requests.exceptions.Timeout:
-
-        print("Groq request timed out.")
-
-        return {
-            "response": "The AI service took too long to respond. Try again."
-        }
-
-
-    except requests.exceptions.RequestException as e:
-
-        print("Network error:", e)
-
-        return {
-            "response": "Could not connect to the AI service."
-        }
-
-
-    except Exception as e:
-
-        print("Unexpected server error:", repr(e))
-
-        return {
-            "response": "Server error. Check the backend terminal."
-        }
+    return {
+        "response": answer,
+        "uploaded_files": len(files),
+        "uploads_used": upload_counts[session_id],
+        "uploads_remaining": MAX_FILES_PER_SESSION - upload_counts[session_id],
+        "model_used": model_used,
+    }
