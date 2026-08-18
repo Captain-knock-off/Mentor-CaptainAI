@@ -1,305 +1,298 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Mentor.CaptainAI — Learn Fast. Understand Better.">
-    <meta name="theme-color" content="#08090c">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="Mentor.CaptainAI - Learn Fast. Understand Better."
+    >
 
     <title>Mentor.CaptainAI</title>
 
-    <link rel="stylesheet" href="style.css">
 
-    <!-- Markdown -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- =====================================================
+         CSS
+    ====================================================== -->
 
-    <!-- MathJax configuration MUST load before MathJax -->
-    <script>
-        window.MathJax = {
-            tex: {
-                inlineMath: [
-                    ["$", "$"],
-                    ["\\(", "\\)"]
-                ],
-                displayMath: [
-                    ["$$", "$$"],
-                    ["\\[", "\\]"]
-                ]
-            },
-            options: {
-                skipHtmlTags: [
-                    "script",
-                    "noscript",
-                    "style",
-                    "textarea",
-                    "pre",
-                    "code"
-                ]
-            },
-            startup: {
-                typeset: false
-            }
-        };
+    <link
+        rel="stylesheet"
+        href="style.css"
+    >
+
+
+    <!-- =====================================================
+         MARKED.JS
+         Converts AI Markdown into HTML.
+    ====================================================== -->
+
+    <script
+        src="https://cdn.jsdelivr.net/npm/marked/marked.min.js">
     </script>
 
-    <!-- MathJax -->
-    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+
+    <!-- =====================================================
+         MATHJAX CONFIGURATION
+
+         IMPORTANT:
+         This MUST appear before MathJax itself.
+    ====================================================== -->
+
+    <script>
+
+        window.MathJax = {
+
+            tex: {
+
+                /*
+                    Inline math:
+
+                    $x$
+
+                    or
+
+                    \(x\)
+                */
+
+                inlineMath: [
+                    ['$', '$'],
+                    ['\\(', '\\)']
+                ],
+
+
+                /*
+                    Display math:
+
+                    $$ ... $$
+                */
+
+                displayMath: [
+                    ['$$', '$$']
+                ]
+
+            },
+
+
+            options: {
+
+                /*
+                    Do not try to process code blocks
+                    or normal HTML elements that contain
+                    programming/text content.
+                */
+
+                skipHtmlTags: [
+                    'script',
+                    'noscript',
+                    'style',
+                    'textarea',
+                    'pre',
+                    'code'
+                ]
+
+            },
+
+
+            startup: {
+
+                /*
+                    We manually call MathJax after
+                    inserting each AI response.
+                */
+
+                typeset: false
+
+            }
+
+        };
+
+    </script>
+
+
+    <!-- =====================================================
+         MATHJAX
+    ====================================================== -->
+
+    <script
+        src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+    </script>
+
 </head>
 
+
 <body>
+
+
+    <!-- =====================================================
+         APPLICATION
+    ====================================================== -->
+
     <div class="app">
 
-        <!-- Mobile backdrop -->
-        <div id="mobile-backdrop" class="mobile-backdrop"></div>
 
-        <!-- =====================================================
+        <!-- =================================================
              SIDEBAR
-        ====================================================== -->
-        <aside id="sidebar" class="sidebar" aria-label="Chat history">
+        ================================================== -->
 
-            <div class="sidebar-brand">
-                <div class="brand-icon">✦</div>
+        <aside class="sidebar">
 
-                <div>
-                    <div class="brand-name">
-                        <span class="mentor">Mentor.</span>CaptainAI
-                    </div>
-                    <div class="brand-subtitle">AI learning companion</div>
-                </div>
+
+            <!-- LOGO -->
+
+            <div class="sidebar-logo">
+
+                <span class="mentor">
+                    Mentor.
+                </span>
+
+                <span class="captain">
+                    CaptainAI
+                </span>
+
             </div>
 
+
+            <!-- NEW CHAT -->
+
             <button
-                id="new-chat-button"
                 class="new-chat-btn"
                 type="button"
                 onclick="newChat()"
             >
-                <span class="new-chat-symbol">＋</span>
-                <span>New Chat</span>
-                <kbd>Ctrl K</kbd>
+                + New Chat
             </button>
 
+
+            <!-- CLEAR CHATS -->
+
             <button
-                id="clear-chat-button"
                 class="clear-btn"
                 type="button"
                 onclick="confirmClearChats()"
             >
-                Clear chats
+                Clear Chats
             </button>
 
-            <div class="history-heading">
-                <span>Recent chats</span>
-                <span id="history-count" class="history-count">0</span>
-            </div>
 
-            <div id="chat-history" class="chat-history"></div>
+            <!-- CHAT HISTORY -->
 
-            <div class="sidebar-footer" id="server-status" aria-live="polite">
-                <span class="status-dot" id="server-status-dot"></span>
-                <span id="server-status-text">Checking server...</span>
-            </div>
+            <div
+                id="chat-history"
+                class="chat-history"
+            ></div>
+
         </aside>
 
-        <!-- =====================================================
-             MAIN
-        ====================================================== -->
+
+        <!-- =================================================
+             MAIN CHAT
+        ================================================== -->
+
         <main class="chat-container">
 
+
+            <!-- HEADER -->
+
             <header class="header">
-                <button
-                    id="mobile-menu-button"
-                    class="icon-btn mobile-menu-btn"
-                    type="button"
-                    aria-label="Open menu"
-                    title="Open menu"
-                >
-                    ☰
-                </button>
 
-                <div class="header-center">
-                    <div class="header-title">
-                        <span class="mentor">Mentor.</span>CaptainAI
-                    </div>
-                    <div class="header-status">
-                        <span class="status-dot"></span>
-                        Ready to learn
-                    </div>
-                </div>
+                <h1>
 
-                <button
-                    class="icon-btn mobile-new-btn"
-                    type="button"
-                    aria-label="New chat"
-                    title="New chat"
-                    onclick="newChat()"
-                >
-                    ＋
-                </button>
+                    <span class="mentor">
+                        Mentor.
+                    </span>
+
+                    CaptainAI
+
+                </h1>
+
+
+                <p>
+                    Learn Fast. Understand Better.
+                </p>
+
             </header>
 
+
             <!-- =================================================
-                 CHAT MESSAGES
+                 CHAT BOX
             ================================================== -->
+
             <section
                 id="chat-box"
                 class="chat-box"
                 aria-live="polite"
-                aria-label="Conversation"
             ></section>
 
-            <!-- =================================================
-                 EMPTY STATE
-            ================================================== -->
-            <section
-                id="empty-state"
-                class="empty-state"
-                aria-label="Start a conversation"
-            >
-                <div class="empty-orb">✦</div>
-
-                <div class="empty-eyebrow">
-                    MENTOR.CAPTAINAI
-                </div>
-
-                <h1>
-                    Learn fast.<br>
-                    <span>Understand better.</span>
-                </h1>
-
-                <p>
-                    Ask a question, explore a concept,
-                    or work through a problem step by step.
-                </p>
-
-                <div class="suggestions">
-                    <button
-                        class="suggestion-card"
-                        type="button"
-                        data-prompt="Explain Newton's laws of motion simply."
-                    >
-                        <span class="suggestion-icon">◉</span>
-                        <span class="suggestion-copy">
-                            <strong>Physics</strong>
-                            <small>Explain a concept</small>
-                        </span>
-                        <span class="suggestion-arrow">↗</span>
-                    </button>
-
-                    <button
-                        class="suggestion-card"
-                        type="button"
-                        data-prompt="Help me understand a quadratic equation step by step."
-                    >
-                        <span class="suggestion-icon">∑</span>
-                        <span class="suggestion-copy">
-                            <strong>Mathematics</strong>
-                            <small>Learn step by step</small>
-                        </span>
-                        <span class="suggestion-arrow">↗</span>
-                    </button>
-
-                    <button
-                        class="suggestion-card"
-                        type="button"
-                        data-prompt="Explain how a CPU works in simple terms."
-                    >
-                        <span class="suggestion-icon">⌘</span>
-                        <span class="suggestion-copy">
-                            <strong>Technology</strong>
-                            <small>Break it down</small>
-                        </span>
-                        <span class="suggestion-arrow">↗</span>
-                    </button>
-
-                    <button
-                        class="suggestion-card"
-                        type="button"
-                        data-prompt="Teach me the basics of chemical bonding."
-                    >
-                        <span class="suggestion-icon">◇</span>
-                        <span class="suggestion-copy">
-                            <strong>Science</strong>
-                            <small>Build the basics</small>
-                        </span>
-                        <span class="suggestion-arrow">↗</span>
-                    </button>
-                </div>
-            </section>
 
             <!-- =================================================
-                 COMPOSER
+                 INPUT
             ================================================== -->
-            <div class="composer-wrap">
-                <div class="input-area">
-                    <button
-                        id="composer-plus"
-                        class="composer-plus"
-                        type="button"
-                        aria-label="Attach a file"
-                        title="Attach a file"
-                    >
-                        ＋
-                    </button>
 
-                    <input
-                        id="file-input"
-                        class="file-input"
-                        type="file"
-                        multiple
-                        accept=".txt,.md,.markdown,.csv,.json,.py,.js,.ts,.html,.css,.xml,.yaml,.yml,.log,.ini,.toml,.sql,.java,.c,.cpp,.h,.hpp,.jsx,.tsx,.sh,.bat,.ps1,.env,.rtf,image/*"
-                    >
+            <div class="input-area">
 
-                    <textarea
-                        id="user-input"
-                        rows="1"
-                        maxlength="5000"
-                        autocomplete="off"
-                        spellcheck="true"
-                        placeholder="Ask Mentor.CaptainAI anything..."
-                        aria-label="Message Mentor.CaptainAI"
-                    ></textarea>
+                <input
+                    type="text"
+                    id="user-input"
+                    placeholder="Ask Mentor.CaptainAI anything..."
+                    autocomplete="off"
+                    maxlength="5000"
+                >
 
-                    <div class="composer-actions">
-                        <span id="char-count" class="char-count">
-                            0 / 5000
-                        </span>
 
-                        <button
-                            id="send-button"
-                            class="send-button"
-                            type="button"
-                            onclick="sendMessage()"
-                            aria-label="Send message"
-                        >
-                            <span class="send-label">Send</span>
-                            <span class="send-icon">↑</span>
-                        </button>
-                    </div>
-                </div>
+                <button
+                    id="send-button"
+                    type="button"
+                    onclick="sendMessage()"
+                >
+                    Send
+                </button>
 
-                <div id="attachment-list" class="attachment-list" aria-live="polite"></div>
-
-                <div class="composer-hint">
-                    <span>Enter to send</span>
-                    <span>•</span>
-                    <span>Shift + Enter for a new line</span>
-                </div>
             </div>
 
+
+            <!-- =================================================
+                 FOOTER
+            ================================================== -->
+
             <footer class="footer">
-                <span>Built by Thirukarthikeyan H S.</span>
-                <span>·</span>
-                <span>Open for public testing</span>
-                <span>·</span>
-                <span>WIP</span>
-                <span>·</span>
-                <a href="mailto:89brats@gmail.com">Feedback</a>
+
+                <p>
+
+                    Built by Thirukarthikeyan H S.
+
+                    Open for public testing.
+                    Expect bugs. WIP.
+
+                    <span>•</span>
+
+                    Feedback:
+
+                    <a href="mailto:89brats@gmail.com">
+                        89brats@gmail.com
+                    </a>
+
+                </p>
+
             </footer>
+
         </main>
+
     </div>
 
-    <!-- App logic -->
+
+    <!-- =====================================================
+         YOUR JAVASCRIPT
+    ====================================================== -->
+
     <script src="script.js"></script>
+
 </body>
+
 </html>
