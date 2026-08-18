@@ -69,13 +69,21 @@ FILES:
 
 app = FastAPI(title="Mentor.CaptainAI API", version="5.0.0")
 
+# Extra allowed origins can be added without a code change: set
+# EXTRA_CORS_ORIGINS="https://foo.com,https://bar.com" on Render.
+_extra_origins = [o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://127.0.0.1:5500",
         "http://localhost:5500",
         "https://mentor-captainai.89brats.workers.dev",
+        *_extra_origins,
     ],
+    # Covers any *.workers.dev / *.pages.dev preview or renamed Worker,
+    # so redeploying the frontend under a new subdomain doesn't break CORS again.
+    allow_origin_regex=r"https://.*\.(workers|pages)\.dev",
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
