@@ -1,80 +1,301 @@
-"use strict";
+from __future__ import annotations
 
-const LOCAL_API = "http://127.0.0.1:8000";
-const PRODUCTION_API = "https://mentor-captainai.onrender.com";
-const API_URL = (location.hostname === "localhost" || location.hostname === "127.0.0.1") ? LOCAL_API : PRODUCTION_API;
+import base64
+import io
+import os
+import threading
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
 
-const STORAGE_KEY = "mentor_captainai_chats";
-const UPLOAD_KEY = "mentor_captainai_uploads_";
-const MAX_FILES = 10;
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+import requests
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from docx import Document
+from openpyxl import load_workbook
+from pypdf import PdfReader
+from pptx import Presentation
 
-const chatBox=document.getElementById("chat-box");
-const userInput=document.getElementById("user-input");
-const historyContainer=document.getElementById("chat-history");
-const historyCount=document.getElementById("history-count");
-const emptyState=document.getElementById("empty-state");
-const sendButton=document.getElementById("send-button");
-const charCount=document.getElementById("char-count");
-const sidebar=document.getElementById("sidebar");
-const mobileBackdrop=document.getElementById("mobile-backdrop");
-const mobileMenuButton=document.getElementById("mobile-menu-button");
-const fileInput=document.getElementById("file-input");
-const composerPlus=document.getElementById("composer-plus");
-const attachmentList=document.getElementById("attachment-list");
-const uploadCounter=document.getElementById("upload-counter");
-const status=document.getElementById("server-status");
-const statusText=document.getElementById("server-status-text");
+load_dotenv()
 
-let chats=[];
-let currentChat=null;
-let selectedFiles=[];
-let isSending=false;
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TEXT_MODEL = os.getenv("TEXT_MODEL", "openai/gpt-oss-120b")
+VISION_MODEL = os.getenv("VISION_MODEL", "qwen/qwen3.6-27b")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_FILES_PER_SESSION = 10
+MAX_IMAGES_PER_REQUEST = 3
+MAX_HISTORY_MESSAGES = 24
+MAX_DOCUMENT_CHARS = 120_000
 
-function setStatus(kind,text){status.classList.remove("offline","checking");if(kind!=="online")status.classList.add(kind);statusText.textContent=text}
-async function checkServer(){setStatus("checking","Checking server...");const c=new AbortController();const t=setTimeout(()=>c.abort(),5000);try{const r=await fetch(`${API_URL}/health`,{cache:"no-store",signal:c.signal});if(!r.ok)throw new Error(`HTTP ${r.status}`);setStatus("online","System online")}catch{setStatus("offline","System offline")}finally{clearTimeout(t)}}
-function startServerMonitor(){checkServer();setInterval(checkServer,30000)}
+ALLOWED_EXTENSIONS = {"txt","md","markdown","csv","json","py","js","ts","html","css","xml","yaml","yml","log","ini","toml","sql","java","c","cpp","h","hpp","jsx","tsx","sh","bat","ps1","env","rtf","pdf","docx","pptx","xlsx","png","jpg","jpeg","webp","gif"}
 
-function configureMarkdown(){if(!window.marked){console.error("Marked.js was not loaded.");return false}window.marked.setOptions({gfm:true,breaks:true});console.log("Marked.js ready.");return true}
-function escapeHTML(t){const d=document.createElement("div");d.textContent=String(t);return d.innerHTML}
-function renderMarkdown(t){if(!t)return"";if(!window.marked)return escapeHTML(t).replace(/\n/g,"<br>");try{return window.marked.parse(String(t))}catch(e){console.error("Markdown rendering error:",e);return escapeHTML(t).replace(/\n/g,"<br>")}}
-async function renderMath(){if(!window.MathJax||typeof window.MathJax.typesetPromise!=="function")return;try{await window.MathJax.typesetPromise([chatBox])}catch(e){console.error("MathJax rendering error:",e)}}
-function scrollBottom(){requestAnimationFrame(()=>chatBox.scrollTop=chatBox.scrollHeight)}
-function updateEmpty(){emptyState.classList.toggle("hidden",!(currentChat&&currentChat.messages.length))}
-function updateCount(){charCount.textContent=`${userInput.value.length} / ${userInput.maxLength}`}
-function resizeInput(){userInput.style.height="auto";userInput.style.height=`${Math.min(userInput.scrollHeight,150)}px`}
-function createChatTitle(t){const s=String(t).replace(/\s+/g," ").trim();return s.length<=30?s:`${s.slice(0,30)}...`}
-function showTyping(){removeTyping();chatBox.insertAdjacentHTML("beforeend",`<div class="message bot" id="typing-indicator"><strong>CaptainAI</strong><div class="typing"><span></span><span></span><span></span></div></div>`);scrollBottom()}
-function removeTyping(){document.getElementById("typing-indicator")?.remove()}
-function setSendState(s){sendButton.disabled=s;sendButton.querySelector(".send-label").textContent=s?"Sending":"Send";sendButton.querySelector(".send-icon").textContent=s?"…":"↑"}
+SYSTEM_PROMPT = """
+You are Mentor.CaptainAI, a modern AI tutor for students.
 
-function saveChats(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(chats))}catch(e){console.error("Could not save chats:",e)}}
-function loadChats(){try{const raw=localStorage.getItem(STORAGE_KEY);if(raw){const p=JSON.parse(raw);if(Array.isArray(p))chats=p}}catch(e){console.error("Could not load chats:",e);chats=[]}}
-function uploadCount(){if(!currentChat)return 0;const n=Number.parseInt(localStorage.getItem(`${UPLOAD_KEY}${currentChat.id}`)||"0",10);return Number.isFinite(n)?n:0}
-function setUploadCount(n){if(currentChat)localStorage.setItem(`${UPLOAD_KEY}${currentChat.id}`,String(Math.min(Math.max(n,0),MAX_FILES)));updateUploadCounter()}
-function updateUploadCounter(){const n=uploadCount()+selectedFiles.length;uploadCounter.textContent=`${n} / ${MAX_FILES} files`;uploadCounter.classList.remove("warning","limit");if(n>=MAX_FILES)uploadCounter.classList.add("limit");else if(n>=MAX_FILES-2)uploadCounter.classList.add("warning")}
+Your job is to help the student UNDERSTAND, not merely dump an answer.
 
-function renderChats(){historyContainer.innerHTML="";historyCount.textContent=String(chats.length);chats.forEach(chat=>{const item=document.createElement("div");item.className="history-item";const title=document.createElement("span");title.className="history-title";title.textContent=chat.title;title.onclick=()=>loadChat(chat.id);const del=document.createElement("button");del.className="delete-btn";del.type="button";del.textContent="×";del.title="Delete chat";del.onclick=e=>{e.stopPropagation();deleteChat(chat.id)};item.append(title,del);historyContainer.appendChild(item)})}
-function newChat(){const c={id:Date.now(),title:"New Chat",messages:[]};chats.unshift(c);currentChat=c;chatBox.innerHTML="";clearSelectedFiles();updateEmpty();renderChats();saveChats();closeMobileSidebar();userInput.focus()}
-function loadChat(id){const c=chats.find(x=>x.id===id);if(!c)return;currentChat=c;chatBox.innerHTML=c.messages.join("");updateUploadCounter();updateEmpty();renderChats();closeMobileSidebar();scrollBottom();renderMath()}
-function deleteChat(id){chats=chats.filter(c=>c.id!==id);localStorage.removeItem(`${UPLOAD_KEY}${id}`);if(currentChat?.id===id){currentChat=null;chatBox.innerHTML=""}clearSelectedFiles();updateEmpty();renderChats();saveChats()}
-function confirmClearChats(){if(!chats.length){alert("There are no chats to clear.");return}if(!confirm("Delete all chats? This cannot be undone."))return;chats=[];currentChat=null;chatBox.innerHTML="";Object.keys(localStorage).filter(k=>k.startsWith(UPLOAD_KEY)).forEach(k=>localStorage.removeItem(k));localStorage.removeItem(STORAGE_KEY);clearSelectedFiles();updateEmpty();renderChats()}
+TEACHING:
+- Explain naturally and clearly.
+- Match the student's likely level.
+- Start simple, then add depth when useful.
+- Break difficult problems into logical steps.
+- Explain what formulas mean and define symbols/units.
+- Use small examples when they improve understanding.
+- Prefer teaching over unexplained final answers.
+- Never reveal private chain-of-thought. Give concise reasoning and useful steps instead.
 
-const ALLOWED_EXTENSIONS=new Set(["txt","md","markdown","csv","json","py","js","ts","html","css","xml","yaml","yml","log","ini","toml","sql","java","c","cpp","h","hpp","jsx","tsx","sh","bat","ps1","env","rtf","pdf","docx","pptx","xlsx","png","jpg","jpeg","webp","gif"]);
-function ext(name){const s=String(name).toLowerCase(),i=s.lastIndexOf(".");return i===-1?"":s.slice(i+1)}
-function sizeText(b){return b<1024?`${b} B`:b<1048576?`${(b/1024).toFixed(1)} KB`:`${(b/1048576).toFixed(1)} MB`}
-function addSelectedFiles(list){const capacity=MAX_FILES-uploadCount()-selectedFiles.length;if(capacity<=0){alert("This chat has reached the 10-file upload limit.");return}for(const f of Array.from(list||[]).slice(0,capacity)){if(f.size>MAX_FILE_SIZE){alert(`${f.name} is larger than 10 MB.`);continue}if(!ALLOWED_EXTENSIONS.has(ext(f.name))){alert(`${f.name} is not a supported file type.`);continue}if(selectedFiles.some(x=>x.file.name===f.name&&x.file.size===f.size&&x.file.lastModified===f.lastModified))continue;selectedFiles.push({id:`${Date.now()}-${Math.random()}`,file:f})}renderAttachments();updateUploadCounter()}
-function renderAttachments(){attachmentList.innerHTML="";selectedFiles.forEach(item=>{const chip=document.createElement("div");chip.className="attachment-chip";const icon=document.createElement("span");icon.textContent=item.file.type.startsWith("image/")?"🖼️":"📄";const name=document.createElement("span");name.className="file-name";name.textContent=item.file.name;const type=document.createElement("span");type.className="file-type";type.textContent=ext(item.file.name);const size=document.createElement("span");size.className="file-size";size.textContent=sizeText(item.file.size);const rm=document.createElement("button");rm.className="remove-file";rm.type="button";rm.textContent="×";rm.onclick=()=>{selectedFiles=selectedFiles.filter(x=>x.id!==item.id);renderAttachments();updateUploadCounter()};chip.append(icon,name,type,size,rm);attachmentList.appendChild(chip)})}
-function clearSelectedFiles(){selectedFiles=[];if(fileInput)fileInput.value="";renderAttachments();updateUploadCounter()}
+STYLE:
+- Smart, calm, slightly casual human tutor.
+- Concise for easy questions, detailed for difficult questions.
+- Avoid customer-support language and repetitive canned greetings.
+- Do not ask "How can I help?" after every greeting.
+- Use Markdown naturally.
 
-function addUserMessage(text,files=[]){const filesHtml=files.length?`<div class="attached-name">${files.map(f=>`📎 ${escapeHTML(f.name)}`).join("<br>")}</div>`:"";const html=`<div class="message user"><strong>You</strong><div class="message-content">${renderMarkdown(text)}${filesHtml}</div></div>`;chatBox.insertAdjacentHTML("beforeend",html);currentChat.messages.push(html);updateEmpty();scrollBottom()}
-function addBotMessage(reply){const html=`<div class="message bot"><strong>CaptainAI</strong><div class="message-content">${renderMarkdown(reply)}</div></div>`;chatBox.insertAdjacentHTML("beforeend",html);if(currentChat)currentChat.messages.push(html);saveChats();updateEmpty();scrollBottom();renderMath()}
+MATH:
+- Use LaTeX.
+- Display equations with $$ ... $$ and inline equations with $ ... $.
+- Keep delimiters balanced.
+- Explain important symbols and units.
 
-async function sendMessage(){if(isSending)return;const message=userInput.value.trim();if(!message&&!selectedFiles.length)return;if(!currentChat)newChat();if(uploadCount()+selectedFiles.length>MAX_FILES){addBotMessage(`**Upload limit reached.** You can use at most ${MAX_FILES} files in this chat.`);return}const requestText=message||"Please inspect the attached file(s) and teach me what they contain.";if(currentChat.title==="New Chat"){currentChat.title=createChatTitle(requestText);renderChats()}const filesThis=selectedFiles.map(x=>x.file);addUserMessage(message||"Please inspect the attached file(s).",filesThis);userInput.value="";updateCount();resizeInput();showTyping();isSending=true;setSendState(true);try{const form=new FormData();form.append("text",requestText);form.append("mode","normal");form.append("session_id",String(currentChat.id));filesThis.forEach(f=>form.append("files",f,f.name));const r=await fetch(`${API_URL}/chat`,{method:"POST",body:form});removeTyping();let data;try{data=await r.json()}catch{throw new Error(`Backend returned invalid JSON (HTTP ${r.status})`)}console.log("Backend status:",r.status,data);if(!r.ok){const detail=Array.isArray(data?.detail)?data.detail.map(x=>`${Array.isArray(x.loc)?x.loc.join("."):"request"}: ${x.msg}`).join("\n"):data?.detail||data?.response||`HTTP ${r.status}`;addBotMessage(`**Server error**\n\n${detail}`);return}const reply=data?.response;if(typeof reply!=="string"||!reply.trim()){addBotMessage("The server responded, but CaptainAI returned an empty response.");return}if(Number.isFinite(Number(data?.uploads_used)))setUploadCount(Number(data.uploads_used));setStatus("online","System online");addBotMessage(reply)}catch(e){removeTyping();setStatus("offline","System offline");console.error("Fetch error:",e);addBotMessage(e instanceof TypeError?`**Cannot connect to CaptainAI.**\n\nSelected backend:\n\n\`${API_URL}\``:`**Request failed.**\n\n${e.message}`)}finally{isSending=false;setSendState(false);clearSelectedFiles();saveChats();renderChats();scrollBottom()}}
+FILES:
+- Treat attached files as source material.
+- Never invent facts that are not present in an attachment.
+- Teach from extracted document content.
+- For images, analyze only what is actually visible.
+- Say what is missing if a file is unreadable/incomplete.
+"""
 
-function setup(){configureMarkdown();loadChats();renderChats();updateEmpty();updateCount();resizeInput();setupSuggestions();userInput.addEventListener("input",()=>{updateCount();resizeInput()});userInput.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage()}});composerPlus?.addEventListener("click",()=>fileInput?.click());fileInput?.addEventListener("change",e=>{addSelectedFiles(e.target.files);e.target.value=""});mobileMenuButton?.addEventListener("click",openMobileSidebar);mobileBackdrop?.addEventListener("click",closeMobileSidebar);document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();newChat()}if(e.key==="Escape")closeMobileSidebar()});startServerMonitor();console.log("Mentor.CaptainAI frontend starting...",{API_URL})}
-function openMobileSidebar(){sidebar.classList.add("mobile-open");mobileBackdrop.classList.add("visible")}
-function closeMobileSidebar(){sidebar.classList.remove("mobile-open");mobileBackdrop.classList.remove("visible")}
-function setupSuggestions(){document.querySelectorAll(".suggestion-card").forEach(b=>b.addEventListener("click",()=>{userInput.value=b.dataset.prompt||"";updateCount();resizeInput();userInput.focus();sendMessage()}))}
+app = FastAPI(title="Mentor.CaptainAI API", version="5.0.0")
 
-setup();
+# Extra allowed origins can be added without a code change: set
+# EXTRA_CORS_ORIGINS="https://foo.com,https://bar.com" on Render.
+_extra_origins = [o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+        "https://mentor-captainai.89brats.workers.dev",
+        *_extra_origins,
+    ],
+    # Covers any *.workers.dev / *.pages.dev preview or renamed Worker,
+    # so redeploying the frontend under a new subdomain doesn't break CORS again.
+    allow_origin_regex=r"https://.*\.(workers|pages)\.dev",
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
+
+history_lock = threading.Lock()
+conversation_history: dict[str, list[dict[str, str]]] = defaultdict(list)
+upload_counts: dict[str, int] = defaultdict(int)
+
+
+def ext(name: str) -> str:
+    return Path(name).suffix.lower().lstrip(".")
+
+
+def safe_name(name: str | None) -> str:
+    return Path(name or "attachment").name[:180]
+
+
+def read_text(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+def extract_document(name: str, data: bytes) -> str:
+    e = ext(name)
+    if e in {"txt","md","markdown","csv","json","py","js","ts","html","css","xml","yaml","yml","log","ini","toml","sql","java","c","cpp","h","hpp","jsx","tsx","sh","bat","ps1","env","rtf"}:
+        return read_text(data)
+    if e == "pdf":
+        reader = PdfReader(io.BytesIO(data))
+        return "\n\n".join(f"[PDF page {i}]\n{page.extract_text() or ''}" for i, page in enumerate(reader.pages, 1))
+    if e == "docx":
+        doc = Document(io.BytesIO(data))
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for n, table in enumerate(doc.tables, 1):
+            parts.append(f"[DOCX table {n}]\n" + "\n".join(" | ".join(c.text.strip() for c in row.cells) for row in table.rows))
+        return "\n\n".join(parts) or "[Empty DOCX]"
+    if e == "pptx":
+        prs = Presentation(io.BytesIO(data))
+        parts = []
+        for i, slide in enumerate(prs.slides, 1):
+            texts = [shape.text.strip() for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
+            parts.append(f"[Slide {i}]\n" + "\n".join(texts))
+        return "\n\n".join(parts) or "[Empty PPTX]"
+    if e == "xlsx":
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        parts = []
+        for sheet in wb.worksheets:
+            rows = []
+            for row in sheet.iter_rows(values_only=True):
+                vals = ["" if v is None else str(v) for v in row]
+                if any(vals):
+                    rows.append(" | ".join(vals))
+                if len(rows) >= 500:
+                    break
+            parts.append(f"[Worksheet: {sheet.title}]\n" + "\n".join(rows))
+        return "\n\n".join(parts) or "[Empty XLSX]"
+    return ""
+
+
+def image_data_url(name: str, data: bytes) -> str:
+    mime = {"png":"image/png","jpg":"image/jpeg","jpeg":"image/jpeg","webp":"image/webp","gif":"image/gif"}.get(ext(name), "application/octet-stream")
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def get_history(session_id: str) -> list[dict[str, str]]:
+    with history_lock:
+        return list(conversation_history.get(session_id, [])[-MAX_HISTORY_MESSAGES:])
+
+
+def save_turn(session_id: str, user: str, assistant: str) -> None:
+    with history_lock:
+        conversation_history[session_id].extend([
+            {"role":"user","content":user},
+            {"role":"assistant","content":assistant},
+        ])
+        conversation_history[session_id] = conversation_history[session_id][-MAX_HISTORY_MESSAGES:]
+
+
+def api_error(response: requests.Response) -> str:
+    try:
+        body = response.json()
+        return body.get("error", {}).get("message") or body.get("message") or response.text or f"HTTP {response.status_code}"
+    except ValueError:
+        return response.text or f"HTTP {response.status_code}"
+
+
+def call_groq(session_id: str, user_text: str, docs: str, images: list[dict[str, Any]]) -> tuple[str, str]:
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is not configured on the server.")
+
+    prompt = user_text.strip() or "Please inspect the attached file(s) and teach me what they contain."
+    if docs.strip():
+        prompt += "\n\nATTACHED SOURCE MATERIAL:\n" + docs[:MAX_DOCUMENT_CHARS]
+
+    messages: list[dict[str, Any]] = [{"role":"system","content":SYSTEM_PROMPT}]
+    messages.extend(get_history(session_id))
+
+    model = VISION_MODEL if images else TEXT_MODEL
+    if images:
+        content: list[dict[str, Any]] = [{"type":"text","text":prompt}]
+        content.extend(images)
+        messages.append({"role":"user","content":content})
+    else:
+        messages.append({"role":"user","content":prompt})
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1800,
+    }
+    if model.startswith("openai/gpt-oss"):
+        payload["reasoning_effort"] = "medium"
+
+    response = requests.post(
+        GROQ_URL,
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type":"application/json"},
+        json=payload,
+        timeout=120,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(api_error(response))
+    try:
+        answer = response.json()["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise RuntimeError("Groq returned an unexpected response.") from exc
+    return str(answer).strip(), model
+
+
+@app.get("/")
+async def root():
+    return {"status":"online","service":"Mentor.CaptainAI","version":"5.0.0","message":"Backend is running."}
+
+
+@app.get("/health")
+async def health():
+    return {"status":"ok","service":"Mentor.CaptainAI"}
+
+
+@app.post("/chat")
+async def chat(request: Request):
+    """Accept both the old JSON contract and the new multipart file-upload contract."""
+    content_type = request.headers.get("content-type", "").lower()
+    text = ""
+    session_id = "default"
+    files: list[UploadFile] = []
+
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        text = str(form.get("text") or "")
+        session_id = str(form.get("session_id") or "default")
+        for value in form.getlist("files"):
+            if isinstance(value, UploadFile):
+                files.append(value)
+    elif content_type.startswith("application/json"):
+        body = await request.json()
+        text = str(body.get("text") or "")
+        session_id = str(body.get("session_id") or "default")
+    else:
+        raise HTTPException(415, "Use application/json or multipart/form-data.")
+
+    text = text.strip()[:5000]
+    session_id = session_id.strip()[:128] or "default"
+    current = upload_counts[session_id]
+
+    if current + len(files) > MAX_FILES_PER_SESSION:
+        raise HTTPException(429, f"This chat has reached the {MAX_FILES_PER_SESSION}-file upload limit.")
+    if not text and not files:
+        raise HTTPException(422, "Message or attachment required.")
+
+    docs: list[str] = []
+    images: list[dict[str, Any]] = []
+    names: list[str] = []
+
+    for upload in files:
+        name = safe_name(upload.filename)
+        e = ext(name)
+        if e not in ALLOWED_EXTENSIONS:
+            raise HTTPException(415, f"Unsupported file type: {name}")
+        data = await upload.read()
+        if len(data) > MAX_FILE_SIZE:
+            raise HTTPException(413, f"{name} exceeds the 10 MB file limit.")
+        names.append(name)
+        if e in {"png","jpg","jpeg","webp","gif"}:
+            if len(images) >= MAX_IMAGES_PER_REQUEST:
+                raise HTTPException(400, f"Only {MAX_IMAGES_PER_REQUEST} images may be attached to one message.")
+            images.append({"type":"image_url","image_url":{"url":image_data_url(name, data)}})
+        else:
+            docs.append(f"--- FILE: {name} ---\n{extract_document(name, data)}\n--- END FILE: {name} ---")
+
+    history_user = text or "Please inspect the attached file(s)."
+    if names:
+        history_user += "\n\nAttached files: " + ", ".join(names)
+
+    try:
+        answer, model_used = call_groq(session_id, text, "\n\n".join(docs), images)
+    except requests.Timeout as exc:
+        raise HTTPException(504, "The AI service timed out. Please try again.") from exc
+    except requests.RequestException as exc:
+        raise HTTPException(502, "The AI service could not be reached.") from exc
+    except RuntimeError as exc:
+        message = str(exc)
+        if "blocked at the project level" in message.lower():
+            message += " Enable the configured VISION_MODEL in your Groq project, or set VISION_MODEL to another permitted vision model."
+        raise HTTPException(502, message) from exc
+
+    save_turn(session_id, history_user, answer)
+    upload_counts[session_id] = current + len(files)
+
+    return {
+        "response": answer,
+        "uploaded_files": len(files),
+        "uploads_used": upload_counts[session_id],
+        "uploads_remaining": MAX_FILES_PER_SESSION - upload_counts[session_id],
+        "model_used": model_used,
+    }
