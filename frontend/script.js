@@ -1,85 +1,1382 @@
 "use strict";
 
-const LOCAL_API = "http://127.0.0.1:8000";
-const PRODUCTION_API = "https://mentor-captainai.onrender.com";
-const API_URL = (location.hostname === "localhost" || location.hostname === "127.0.0.1") ? LOCAL_API : PRODUCTION_API;
+
+/* =========================================================
+   MENTOR.CAPTAINAI
+   FRONTEND CHAT ENGINE
+========================================================= */
+
+
+/* =========================================================
+   CONFIGURATION
+========================================================= */
+
+
+const API_URL = "https://mentor-captainai.onrender.com";
+
+
+/* =========================================================
+   STORAGE
+========================================================= */
 
 const STORAGE_KEY = "mentor_captainai_chats";
-const UPLOAD_KEY = "mentor_captainai_uploads_";
-const MAX_FILES = 10;
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-const chatBox=document.getElementById("chat-box");
-const userInput=document.getElementById("user-input");
-const historyContainer=document.getElementById("chat-history");
-const historyCount=document.getElementById("history-count");
-const emptyState=document.getElementById("empty-state");
-const sendButton=document.getElementById("send-button");
-const charCount=document.getElementById("char-count");
-const sidebar=document.getElementById("sidebar");
-const mobileBackdrop=document.getElementById("mobile-backdrop");
-const mobileMenuButton=document.getElementById("mobile-menu-button");
-const fileInput=document.getElementById("file-input");
-const composerPlus=document.getElementById("composer-plus");
-const attachmentList=document.getElementById("attachment-list");
-const uploadCounter=document.getElementById("upload-counter");
-const status=document.getElementById("server-status");
-const statusText=document.getElementById("server-status-text");
 
-let chats=[];
-let currentChat=null;
-let selectedFiles=[];
-let isSending=false;
+/* =========================================================
+   STATE
+========================================================= */
 
-let serverAwake=false;
-function setStatus(kind,text){status.classList.remove("offline","checking");if(kind!=="online")status.classList.add(kind);statusText.textContent=text}
-async function pingHealth(timeoutMs){const c=new AbortController();const t=setTimeout(()=>c.abort(),timeoutMs);try{const r=await fetch(`${API_URL}/health`,{cache:"no-store",signal:c.signal});return r.ok}catch{return false}finally{clearTimeout(t)}}
-async function checkServer(){setStatus("checking","Checking server...");const ok=await pingHealth(5000);serverAwake=ok;setStatus(ok?"online":"offline",ok?"System online":"System offline")}
-function startServerMonitor(){checkServer();setInterval(checkServer,30000)}
-// Render's free tier sleeps after ~15 min idle; the first request afterwards can take up to a minute
-// to wake back up. Poll /health with a longer budget instead of letting the real request time out.
-async function wakeServer(onWaking){if(serverAwake)return true;onWaking?.();const deadline=Date.now()+55000;while(Date.now()<deadline){if(await pingHealth(8000)){serverAwake=true;setStatus("online","System online");return true}await new Promise(r=>setTimeout(r,2500))}return false}
+let chats = [];
 
-function configureMarkdown(){if(!window.marked){console.error("Marked.js was not loaded.");return false}window.marked.setOptions({gfm:true,breaks:true});console.log("Marked.js ready.");return true}
-function escapeHTML(t){const d=document.createElement("div");d.textContent=String(t);return d.innerHTML}
-function renderMarkdown(t){if(!t)return"";if(!window.marked)return escapeHTML(t).replace(/\n/g,"<br>");try{return window.marked.parse(String(t))}catch(e){console.error("Markdown rendering error:",e);return escapeHTML(t).replace(/\n/g,"<br>")}}
-async function renderMath(){if(!window.MathJax||typeof window.MathJax.typesetPromise!=="function")return;try{await window.MathJax.typesetPromise([chatBox])}catch(e){console.error("MathJax rendering error:",e)}}
-function scrollBottom(){requestAnimationFrame(()=>chatBox.scrollTop=chatBox.scrollHeight)}
-function updateEmpty(){emptyState.classList.toggle("hidden",!(currentChat&&currentChat.messages.length))}
-function updateCount(){charCount.textContent=`${userInput.value.length} / ${userInput.maxLength}`}
-function resizeInput(){userInput.style.height="auto";userInput.style.height=`${Math.min(userInput.scrollHeight,150)}px`}
-function createChatTitle(t){const s=String(t).replace(/\s+/g," ").trim();return s.length<=30?s:`${s.slice(0,30)}...`}
-function showTyping(){removeTyping();chatBox.insertAdjacentHTML("beforeend",`<div class="message bot" id="typing-indicator"><strong>CaptainAI</strong><div class="typing"><span></span><span></span><span></span></div></div>`);scrollBottom()}
-function removeTyping(){document.getElementById("typing-indicator")?.remove()}
-function setSendState(s){sendButton.disabled=s;sendButton.querySelector(".send-label").textContent=s?"Sending":"Send";sendButton.querySelector(".send-icon").textContent=s?"…":"↑"}
+let currentChat = null;
 
-function saveChats(){try{localStorage.setItem(STORAGE_KEY,JSON.stringify(chats))}catch(e){console.error("Could not save chats:",e)}}
-function loadChats(){try{const raw=localStorage.getItem(STORAGE_KEY);if(raw){const p=JSON.parse(raw);if(Array.isArray(p))chats=p}}catch(e){console.error("Could not load chats:",e);chats=[]}}
-function uploadCount(){if(!currentChat)return 0;const n=Number.parseInt(localStorage.getItem(`${UPLOAD_KEY}${currentChat.id}`)||"0",10);return Number.isFinite(n)?n:0}
-function setUploadCount(n){if(currentChat)localStorage.setItem(`${UPLOAD_KEY}${currentChat.id}`,String(Math.min(Math.max(n,0),MAX_FILES)));updateUploadCounter()}
-function updateUploadCounter(){const n=uploadCount()+selectedFiles.length;uploadCounter.textContent=`${n} / ${MAX_FILES} files`;uploadCounter.classList.remove("warning","limit");if(n>=MAX_FILES)uploadCounter.classList.add("limit");else if(n>=MAX_FILES-2)uploadCounter.classList.add("warning")}
+let isSending = false;
 
-function renderChats(){historyContainer.innerHTML="";historyCount.textContent=String(chats.length);chats.forEach(chat=>{const item=document.createElement("div");item.className="history-item";const title=document.createElement("span");title.className="history-title";title.textContent=chat.title;title.onclick=()=>loadChat(chat.id);const del=document.createElement("button");del.className="delete-btn";del.type="button";del.textContent="×";del.title="Delete chat";del.onclick=e=>{e.stopPropagation();deleteChat(chat.id)};item.append(title,del);historyContainer.appendChild(item)})}
-function newChat(){const c={id:Date.now(),title:"New Chat",messages:[]};chats.unshift(c);currentChat=c;chatBox.innerHTML="";clearSelectedFiles();updateEmpty();renderChats();saveChats();closeMobileSidebar();userInput.focus()}
-function loadChat(id){const c=chats.find(x=>x.id===id);if(!c)return;currentChat=c;chatBox.innerHTML=c.messages.join("");updateUploadCounter();updateEmpty();renderChats();closeMobileSidebar();scrollBottom();renderMath()}
-function deleteChat(id){chats=chats.filter(c=>c.id!==id);localStorage.removeItem(`${UPLOAD_KEY}${id}`);if(currentChat?.id===id){currentChat=null;chatBox.innerHTML=""}clearSelectedFiles();updateEmpty();renderChats();saveChats()}
-function confirmClearChats(){if(!chats.length){alert("There are no chats to clear.");return}if(!confirm("Delete all chats? This cannot be undone."))return;chats=[];currentChat=null;chatBox.innerHTML="";Object.keys(localStorage).filter(k=>k.startsWith(UPLOAD_KEY)).forEach(k=>localStorage.removeItem(k));localStorage.removeItem(STORAGE_KEY);clearSelectedFiles();updateEmpty();renderChats()}
 
-const ALLOWED_EXTENSIONS=new Set(["txt","md","markdown","csv","json","py","js","ts","html","css","xml","yaml","yml","log","ini","toml","sql","java","c","cpp","h","hpp","jsx","tsx","sh","bat","ps1","env","rtf","pdf","docx","pptx","xlsx","png","jpg","jpeg","webp","gif"]);
-function ext(name){const s=String(name).toLowerCase(),i=s.lastIndexOf(".");return i===-1?"":s.slice(i+1)}
-function sizeText(b){return b<1024?`${b} B`:b<1048576?`${(b/1024).toFixed(1)} KB`:`${(b/1048576).toFixed(1)} MB`}
-function addSelectedFiles(list){const capacity=MAX_FILES-uploadCount()-selectedFiles.length;if(capacity<=0){alert("This chat has reached the 10-file upload limit.");return}for(const f of Array.from(list||[]).slice(0,capacity)){if(f.size>MAX_FILE_SIZE){alert(`${f.name} is larger than 10 MB.`);continue}if(!ALLOWED_EXTENSIONS.has(ext(f.name))){alert(`${f.name} is not a supported file type.`);continue}if(selectedFiles.some(x=>x.file.name===f.name&&x.file.size===f.size&&x.file.lastModified===f.lastModified))continue;selectedFiles.push({id:`${Date.now()}-${Math.random()}`,file:f})}renderAttachments();updateUploadCounter()}
-function renderAttachments(){attachmentList.innerHTML="";selectedFiles.forEach(item=>{const chip=document.createElement("div");chip.className="attachment-chip";const icon=document.createElement("span");icon.textContent=item.file.type.startsWith("image/")?"🖼️":"📄";const name=document.createElement("span");name.className="file-name";name.textContent=item.file.name;const type=document.createElement("span");type.className="file-type";type.textContent=ext(item.file.name);const size=document.createElement("span");size.className="file-size";size.textContent=sizeText(item.file.size);const rm=document.createElement("button");rm.className="remove-file";rm.type="button";rm.textContent="×";rm.onclick=()=>{selectedFiles=selectedFiles.filter(x=>x.id!==item.id);renderAttachments();updateUploadCounter()};chip.append(icon,name,type,size,rm);attachmentList.appendChild(chip)})}
-function clearSelectedFiles(){selectedFiles=[];if(fileInput)fileInput.value="";renderAttachments();updateUploadCounter()}
+/* =========================================================
+   ELEMENTS
+========================================================= */
 
-function addUserMessage(text,files=[]){const filesHtml=files.length?`<div class="attached-name">${files.map(f=>`📎 ${escapeHTML(f.name)}`).join("<br>")}</div>`:"";const html=`<div class="message user"><strong>You</strong><div class="message-content">${renderMarkdown(text)}${filesHtml}</div></div>`;chatBox.insertAdjacentHTML("beforeend",html);currentChat.messages.push(html);updateEmpty();scrollBottom()}
-function addBotMessage(reply){const html=`<div class="message bot"><strong>CaptainAI</strong><div class="message-content">${renderMarkdown(reply)}</div></div>`;chatBox.insertAdjacentHTML("beforeend",html);if(currentChat)currentChat.messages.push(html);saveChats();updateEmpty();scrollBottom();renderMath()}
+const chatBox =
+    document.getElementById("chat-box");
 
-async function sendMessage(){if(isSending)return;const message=userInput.value.trim();if(!message&&!selectedFiles.length)return;if(!currentChat)newChat();if(uploadCount()+selectedFiles.length>MAX_FILES){addBotMessage(`**Upload limit reached.** You can use at most ${MAX_FILES} files in this chat.`);return}const requestText=message||"Please inspect the attached file(s) and teach me what they contain.";if(currentChat.title==="New Chat"){currentChat.title=createChatTitle(requestText);renderChats()}const filesThis=selectedFiles.map(x=>x.file);addUserMessage(message||"Please inspect the attached file(s).",filesThis);userInput.value="";updateCount();resizeInput();showTyping();isSending=true;setSendState(true);try{const awake=await wakeServer(()=>{removeTyping();chatBox.insertAdjacentHTML("beforeend",`<div class="message bot" id="typing-indicator"><strong>CaptainAI</strong><div class="message-content">Waking up the backend — Render free tier sleeps after inactivity, this can take up to a minute...</div></div>`);scrollBottom()});removeTyping();if(!awake){setStatus("offline","System offline");addBotMessage(`**Cannot reach the backend.**\n\nSelected backend:\n\`${API_URL}\`\n\nIt didn't respond to a health check within 55s. Check that the Render service is deployed and running (not crashed/suspended) — visit \`${API_URL}/health\` directly in a new tab to confirm.`);return}showTyping();const form=new FormData();form.append("text",requestText);form.append("mode","normal");form.append("session_id",String(currentChat.id));filesThis.forEach(f=>form.append("files",f,f.name));const r=await fetch(`${API_URL}/chat`,{method:"POST",body:form});removeTyping();let data;try{data=await r.json()}catch{throw new Error(`Backend returned invalid JSON (HTTP ${r.status})`)}console.log("Backend status:",r.status,data);if(!r.ok){const detail=Array.isArray(data?.detail)?data.detail.map(x=>`${Array.isArray(x.loc)?x.loc.join("."):"request"}: ${x.msg}`).join("\n"):data?.detail||data?.response||`HTTP ${r.status}`;addBotMessage(`**Server error**\n\n${detail}`);return}const reply=data?.response;if(typeof reply!=="string"||!reply.trim()){addBotMessage("The server responded, but CaptainAI returned an empty response.");return}if(Number.isFinite(Number(data?.uploads_used)))setUploadCount(Number(data.uploads_used));setStatus("online","System online");addBotMessage(reply)}catch(e){removeTyping();setStatus("offline","System offline");serverAwake=false;console.error("Fetch error:",e);addBotMessage(e instanceof TypeError?`**Cannot connect to CaptainAI.**\n\nSelected backend:\n\`${API_URL}\`\nPage origin:\n\`${location.origin}\`\n\nThe health check just passed but this request still failed at the network level, so it's almost certainly **CORS**: the backend's allowed origins list doesn't include the origin above. Check \`allow_origins\` in \`backend/main.py\` and the CORS config on Render.`:`**Request failed.**\n\n${e.message}`)}finally{isSending=false;setSendState(false);clearSelectedFiles();saveChats();renderChats();scrollBottom()}}
+const userInput =
+    document.getElementById("user-input");
 
-function setup(){configureMarkdown();loadChats();renderChats();updateEmpty();updateCount();resizeInput();setupSuggestions();userInput.addEventListener("input",()=>{updateCount();resizeInput()});userInput.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage()}});composerPlus?.addEventListener("click",()=>fileInput?.click());fileInput?.addEventListener("change",e=>{addSelectedFiles(e.target.files);e.target.value=""});mobileMenuButton?.addEventListener("click",openMobileSidebar);mobileBackdrop?.addEventListener("click",closeMobileSidebar);document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();newChat()}if(e.key==="Escape")closeMobileSidebar()});startServerMonitor();console.log("Mentor.CaptainAI frontend starting...",{API_URL})}
-function openMobileSidebar(){sidebar.classList.add("mobile-open");mobileBackdrop.classList.add("visible")}
-function closeMobileSidebar(){sidebar.classList.remove("mobile-open");mobileBackdrop.classList.remove("visible")}
-function setupSuggestions(){document.querySelectorAll(".suggestion-card").forEach(b=>b.addEventListener("click",()=>{userInput.value=b.dataset.prompt||"";updateCount();resizeInput();userInput.focus();sendMessage()}))}
+const historyContainer =
+    document.getElementById("chat-history");
 
-setup();
+const sendButton =
+    document.getElementById("send-button");
+
+
+/* =========================================================
+   MARKED.JS
+========================================================= */
+
+function configureMarkdown() {
+
+    if (!window.marked) {
+
+        console.error(
+            "Marked.js was not loaded."
+        );
+
+        return false;
+    }
+
+
+    /*
+        GitHub-style Markdown.
+
+        breaks: true means normal line breaks
+        are preserved.
+    */
+
+    marked.setOptions({
+
+        gfm: true,
+
+        breaks: true
+
+    });
+
+
+    console.log(
+        "Marked.js ready."
+    );
+
+
+    return true;
+}
+
+
+/* =========================================================
+   HTML ESCAPE
+========================================================= */
+
+function escapeHTML(text) {
+
+    const div =
+        document.createElement("div");
+
+    div.textContent =
+        String(text);
+
+    return div.innerHTML;
+}
+
+
+/* =========================================================
+   MATH NORMALIZATION
+========================================================= */
+
+/*
+    THIS IS THE IMPORTANT FIX.
+
+    AI models can return math in several forms:
+
+        \[ ... \]
+
+        \( ... \)
+
+        $$ ... $$
+
+        $ ... $
+
+    Marked.js can interfere with the backslashes
+    in \[ and \(.
+
+    Therefore we normalize the delimiters BEFORE
+    sending the response to Marked.js.
+*/
+
+function normalizeMath(text) {
+
+    if (!text) {
+        return "";
+    }
+
+
+    let output =
+        String(text);
+
+
+    /* -----------------------------------------------------
+       DISPLAY MATH
+
+       Convert:
+
+       \[
+           equation
+       \]
+
+       into:
+
+       $$
+           equation
+       $$
+    ----------------------------------------------------- */
+
+    output =
+        output.replace(
+            /\\\[/g,
+            "$$"
+        );
+
+
+    output =
+        output.replace(
+            /\\\]/g,
+            "$$"
+        );
+
+
+    /* -----------------------------------------------------
+       INLINE MATH
+
+       Convert:
+
+       \(x\)
+
+       into:
+
+       $x$
+    ----------------------------------------------------- */
+
+    output =
+        output.replace(
+            /\\\(/g,
+            "$"
+        );
+
+
+    output =
+        output.replace(
+            /\\\)/g,
+            "$"
+        );
+
+
+    /*
+        Some models produce:
+
+        [
+        PV = nRT
+        ]
+
+        instead of:
+
+        \[
+        PV = nRT
+        \]
+
+        Detect only brackets that occupy complete
+        lines.
+
+        This prevents normal Markdown links,
+        arrays, etc. from being damaged.
+    */
+
+    output =
+        output.replace(
+            /(^|\n)\[\s*\n([\s\S]*?)\n\](?=\n|$)/g,
+            "$1$$\n$2\n$$"
+        );
+
+
+    return output;
+}
+
+
+/* =========================================================
+   MARKDOWN RENDERING
+========================================================= */
+
+function renderMarkdown(text) {
+
+    if (!text) {
+        return "";
+    }
+
+
+    /*
+        STEP 1
+
+        Normalize LaTeX BEFORE Markdown.
+    */
+
+    const normalized =
+        normalizeMath(text);
+
+
+    /*
+        STEP 2
+
+        If Marked isn't available,
+        safely display plain text.
+    */
+
+    if (!window.marked) {
+
+        console.warn(
+            "Marked.js unavailable."
+        );
+
+
+        return escapeHTML(
+            normalized
+        ).replace(
+            /\n/g,
+            "<br>"
+        );
+    }
+
+
+    /*
+        STEP 3
+
+        Convert Markdown → HTML.
+    */
+
+    try {
+
+        return marked.parse(
+            normalized
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Markdown rendering error:",
+            error
+        );
+
+
+        return escapeHTML(
+            normalized
+        ).replace(
+            /\n/g,
+            "<br>"
+        );
+    }
+}
+
+
+/* =========================================================
+   MATHJAX
+========================================================= */
+
+async function renderMath() {
+
+    /*
+        MathJax may still be loading.
+
+        NEVER let MathJax failure make the
+        entire chat request appear to fail.
+    */
+
+    if (
+        !window.MathJax ||
+        typeof window.MathJax.typesetPromise !== "function"
+    ) {
+
+        console.warn(
+            "MathJax is not ready."
+        );
+
+        return;
+    }
+
+
+    try {
+
+        await window.MathJax.typesetPromise([
+            chatBox
+        ]);
+
+
+        console.log(
+            "MathJax rendered."
+        );
+
+    } catch (error) {
+
+        /*
+            Formula rendering failed, but the
+            AI response itself is still valid.
+        */
+
+        console.error(
+            "MathJax rendering error:",
+            error
+        );
+    }
+}
+
+
+/* =========================================================
+   SCROLL
+========================================================= */
+
+function scrollBottom() {
+
+    if (!chatBox) {
+        return;
+    }
+
+
+    chatBox.scrollTop =
+        chatBox.scrollHeight;
+}
+
+
+/* =========================================================
+   CREATE CHAT
+========================================================= */
+
+function newChat() {
+
+    const chat = {
+
+        id: Date.now(),
+
+        title: "New Chat",
+
+        messages: []
+
+    };
+
+
+    chats.unshift(
+        chat
+    );
+
+
+    currentChat =
+        chat;
+
+
+    chatBox.innerHTML =
+        "";
+
+
+    renderChats();
+
+    saveChats();
+
+
+    if (userInput) {
+
+        userInput.focus();
+
+    }
+}
+
+
+/* =========================================================
+   CREATE CHAT TITLE
+========================================================= */
+
+function createChatTitle(text) {
+
+    const clean =
+        text
+            .replace(/\s+/g, " ")
+            .trim();
+
+
+    if (
+        clean.length <= 30
+    ) {
+
+        return clean;
+
+    }
+
+
+    return (
+        clean.substring(0, 30)
+        + "..."
+    );
+}
+
+
+/* =========================================================
+   SEND MESSAGE
+========================================================= */
+
+async function sendMessage() {
+
+    /*
+        Prevent double requests.
+    */
+
+    if (isSending) {
+        return;
+    }
+
+
+    const message =
+        userInput.value.trim();
+
+
+    if (!message) {
+        return;
+    }
+
+
+    /*
+        Create a chat if necessary.
+    */
+
+    if (!currentChat) {
+
+        newChat();
+
+    }
+
+
+    /*
+        Give the chat a title based
+        on its first message.
+    */
+
+    if (
+        currentChat.title === "New Chat"
+    ) {
+
+        currentChat.title =
+            createChatTitle(
+                message
+            );
+
+
+        renderChats();
+
+        saveChats();
+    }
+
+
+    /* =====================================================
+       USER MESSAGE
+    ===================================================== */
+
+    const userHTML = `
+
+        <div class="message user">
+
+            <strong>You</strong>
+
+            <div class="message-content">
+
+                ${renderMarkdown(message)}
+
+            </div>
+
+        </div>
+
+    `;
+
+
+    chatBox.insertAdjacentHTML(
+        "beforeend",
+        userHTML
+    );
+
+
+    currentChat.messages.push(
+        userHTML
+    );
+
+
+    userInput.value =
+        "";
+
+
+    scrollBottom();
+
+
+    /* =====================================================
+       TYPING INDICATOR
+    ===================================================== */
+
+    const typingHTML = `
+
+        <div
+            class="message bot"
+            id="typing-indicator"
+        >
+
+            <strong>
+                CaptainAI
+            </strong>
+
+            <div class="typing">
+
+                <span></span>
+                <span></span>
+                <span></span>
+
+            </div>
+
+        </div>
+
+    `;
+
+
+    chatBox.insertAdjacentHTML(
+        "beforeend",
+        typingHTML
+    );
+
+
+    scrollBottom();
+
+
+    /* =====================================================
+       LOCK UI
+    ===================================================== */
+
+    isSending =
+        true;
+
+
+    setSendState(
+        true
+    );
+
+
+    /* =====================================================
+       API REQUEST
+    ===================================================== */
+
+    try {
+
+        const endpoint =
+            `${API_URL}/chat`;
+
+
+        console.log(
+            "Sending request:",
+            endpoint
+        );
+
+
+        const response =
+            await fetch(
+                endpoint,
+                {
+
+                    method: "POST",
+
+                    headers: {
+
+                        "Content-Type":
+                            "application/json",
+
+                        "Accept":
+                            "application/json"
+
+                    },
+
+                    body:
+                        JSON.stringify({
+
+                            text:
+                                message,
+
+                            mode:
+                                "normal",
+
+                            session_id:
+                                String(
+                                    currentChat.id
+                                )
+
+                        })
+
+                }
+            );
+
+
+        /*
+            Remove typing indicator once
+            the server responds.
+        */
+
+        removeTyping();
+
+
+        /* =================================================
+           READ JSON
+        ================================================= */
+
+        let data;
+
+
+        try {
+
+            data =
+                await response.json();
+
+        } catch (jsonError) {
+
+            console.error(
+                "Invalid JSON:",
+                jsonError
+            );
+
+
+            throw new Error(
+                `Backend returned invalid JSON (HTTP ${response.status})`
+            );
+        }
+
+
+        console.log(
+            "Backend status:",
+            response.status
+        );
+
+
+        console.log(
+            "Backend response:",
+            data
+        );
+
+
+        /* =================================================
+           422 VALIDATION ERROR
+        ================================================= */
+
+        if (
+            response.status === 422
+        ) {
+
+            console.error(
+                "FastAPI validation error:",
+                data
+            );
+
+
+            let details =
+                "The backend rejected the request.";
+
+
+            if (
+                data &&
+                Array.isArray(
+                    data.detail
+                )
+            ) {
+
+                details =
+                    data.detail
+                        .map(
+                            item => {
+
+                                const location =
+                                    item.loc
+                                        ? item.loc.join(".")
+                                        : "request";
+
+
+                                return (
+                                    `${location}: ${item.msg}`
+                                );
+
+                            }
+                        )
+                        .join("\n");
+
+            }
+
+
+            addBotMessage(
+                `**Request validation error**\n\n\`${details}\``
+            );
+
+
+            return;
+        }
+
+
+        /* =================================================
+           OTHER SERVER ERRORS
+        ================================================= */
+
+        if (!response.ok) {
+
+            console.error(
+                "Backend HTTP error:",
+                response.status,
+                data
+            );
+
+
+            const serverMessage =
+                data?.response ||
+                data?.detail ||
+                `HTTP ${response.status}`;
+
+
+            addBotMessage(
+                `**Server error**\n\n${serverMessage}`
+            );
+
+
+            return;
+        }
+
+
+        /* =================================================
+           EXTRACT AI RESPONSE
+        ================================================= */
+
+        const reply =
+            data?.response;
+
+
+        if (
+            typeof reply !== "string" ||
+            reply.trim() === ""
+        ) {
+
+            console.error(
+                "Empty AI response:",
+                data
+            );
+
+
+            addBotMessage(
+                "The server responded, but CaptainAI returned an empty response."
+            );
+
+
+            return;
+        }
+
+
+        /* =================================================
+           ADD AI MESSAGE
+        ================================================= */
+
+        addBotMessage(
+            reply
+        );
+
+
+    } catch (error) {
+
+        removeTyping();
+
+
+        console.error(
+            "Fetch error:",
+            error
+        );
+
+
+        let errorMessage;
+
+
+        /*
+            Network failure.
+        */
+
+        if (
+            error instanceof TypeError
+        ) {
+
+            errorMessage =
+                `**Cannot connect to CaptainAI.**\n\n` +
+                `Make sure the backend is running at:\n\n` +
+                `\`${API_URL}\``;
+
+        } else {
+
+            errorMessage =
+                `**Request failed.**\n\n` +
+                `${error.message}`;
+
+        }
+
+
+        addBotMessage(
+            errorMessage
+        );
+
+
+    } finally {
+
+        isSending =
+            false;
+
+
+        setSendState(
+            false
+        );
+
+
+        saveChats();
+
+
+        scrollBottom();
+
+    }
+}
+
+
+/* =========================================================
+   ADD BOT MESSAGE
+========================================================= */
+
+function addBotMessage(reply) {
+
+    /*
+        AI response:
+
+        Markdown
+            ↓
+        normalizeMath()
+            ↓
+        marked.js
+            ↓
+        HTML
+            ↓
+        MathJax
+    */
+
+    const renderedHTML =
+        renderMarkdown(
+            reply
+        );
+
+
+    const botHTML = `
+
+        <div class="message bot">
+
+            <strong>
+                CaptainAI
+            </strong>
+
+            <div class="message-content">
+
+                ${renderedHTML}
+
+            </div>
+
+        </div>
+
+    `;
+
+
+    chatBox.insertAdjacentHTML(
+        "beforeend",
+        botHTML
+    );
+
+
+    if (currentChat) {
+
+        currentChat.messages.push(
+            botHTML
+        );
+
+    }
+
+
+    saveChats();
+
+
+    scrollBottom();
+
+
+    /*
+        IMPORTANT:
+
+        MathJax happens AFTER
+        Markdown rendering.
+    */
+
+    renderMath();
+}
+
+
+/* =========================================================
+   REMOVE TYPING
+========================================================= */
+
+function removeTyping() {
+
+    const typing =
+        document.getElementById(
+            "typing-indicator"
+        );
+
+
+    if (typing) {
+
+        typing.remove();
+
+    }
+}
+
+
+/* =========================================================
+   SEND BUTTON
+========================================================= */
+
+function setSendState(
+    sending
+) {
+
+    if (!sendButton) {
+        return;
+    }
+
+
+    sendButton.disabled =
+        sending;
+
+
+    sendButton.textContent =
+        sending
+            ? "Sending..."
+            : "Send";
+}
+
+
+/* =========================================================
+   LOAD CHAT
+========================================================= */
+
+function loadChat(id) {
+
+    const chat =
+        chats.find(
+            item =>
+                item.id === id
+        );
+
+
+    if (!chat) {
+        return;
+    }
+
+
+    currentChat =
+        chat;
+
+
+    chatBox.innerHTML =
+        chat.messages.join("");
+
+
+    scrollBottom();
+
+
+    /*
+        Re-render formulas from
+        saved messages.
+    */
+
+    renderMath();
+}
+
+
+/* =========================================================
+   DELETE CHAT
+========================================================= */
+
+function deleteChat(id) {
+
+    chats =
+        chats.filter(
+            chat =>
+                chat.id !== id
+        );
+
+
+    if (
+        currentChat &&
+        currentChat.id === id
+    ) {
+
+        currentChat =
+            null;
+
+
+        chatBox.innerHTML =
+            "";
+
+    }
+
+
+    renderChats();
+
+    saveChats();
+}
+
+
+/* =========================================================
+   CLEAR ALL CHATS
+========================================================= */
+
+function confirmClearChats() {
+
+    if (!chats.length) {
+
+        alert(
+            "There are no chats to clear."
+        );
+
+        return;
+    }
+
+
+    const confirmed =
+        confirm(
+            "Delete all chats? This cannot be undone."
+        );
+
+
+    if (!confirmed) {
+        return;
+    }
+
+
+    chats = [];
+
+    currentChat =
+        null;
+
+
+    chatBox.innerHTML =
+        "";
+
+
+    localStorage.removeItem(
+        STORAGE_KEY
+    );
+
+
+    renderChats();
+}
+
+
+/* =========================================================
+   SIDEBAR
+========================================================= */
+
+function renderChats() {
+
+    if (!historyContainer) {
+        return;
+    }
+
+
+    historyContainer.innerHTML =
+        "";
+
+
+    chats.forEach(
+        chat => {
+
+            const item =
+                document.createElement(
+                    "div"
+                );
+
+
+            item.className =
+                "history-item";
+
+
+            const title =
+                document.createElement(
+                    "span"
+                );
+
+
+            title.className =
+                "history-title";
+
+
+            title.textContent =
+                chat.title;
+
+
+            title.onclick =
+                () =>
+                    loadChat(
+                        chat.id
+                    );
+
+
+            const deleteButton =
+                document.createElement(
+                    "button"
+                );
+
+
+            deleteButton.className =
+                "delete-btn";
+
+
+            deleteButton.type =
+                "button";
+
+
+            deleteButton.textContent =
+                "×";
+
+
+            deleteButton.title =
+                "Delete chat";
+
+
+            deleteButton.onclick =
+                event => {
+
+                    event.stopPropagation();
+
+                    deleteChat(
+                        chat.id
+                    );
+
+                };
+
+
+            item.appendChild(
+                title
+            );
+
+
+            item.appendChild(
+                deleteButton
+            );
+
+
+            historyContainer.appendChild(
+                item
+            );
+
+        }
+    );
+}
+
+
+/* =========================================================
+   SAVE CHATS
+========================================================= */
+
+function saveChats() {
+
+    try {
+
+        localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify(
+                chats
+            )
+        );
+
+    } catch (error) {
+
+        console.error(
+            "Could not save chats:",
+            error
+        );
+
+    }
+}
+
+
+/* =========================================================
+   LOAD SAVED CHATS
+========================================================= */
+
+function loadSavedChats() {
+
+    try {
+
+        const saved =
+            localStorage.getItem(
+                STORAGE_KEY
+            );
+
+
+        if (!saved) {
+            return;
+        }
+
+
+        const parsed =
+            JSON.parse(
+                saved
+            );
+
+
+        if (
+            !Array.isArray(parsed)
+        ) {
+
+            console.warn(
+                "Saved chat data is invalid."
+            );
+
+            return;
+        }
+
+
+        chats =
+            parsed;
+
+
+        renderChats();
+
+
+    } catch (error) {
+
+        console.error(
+            "Could not load saved chats:",
+            error
+        );
+
+
+        chats = [];
+
+    }
+}
+
+
+/* =========================================================
+   ENTER KEY
+========================================================= */
+
+if (userInput) {
+
+    userInput.addEventListener(
+        "keydown",
+        event => {
+
+            if (
+                event.key === "Enter" &&
+                !event.shiftKey
+            ) {
+
+                event.preventDefault();
+
+                sendMessage();
+
+            }
+
+        }
+    );
+
+}
+
+
+/* =========================================================
+   INITIALIZATION
+========================================================= */
+
+function initialize() {
+
+    console.log(
+        "Mentor.CaptainAI starting..."
+    );
+
+
+    configureMarkdown();
+
+
+    loadSavedChats();
+
+
+    console.log(
+        "Marked:",
+        typeof window.marked !== "undefined"
+    );
+
+
+    console.log(
+        "MathJax:",
+        typeof window.MathJax !== "undefined"
+    );
+
+
+
+    window.addEventListener(
+        "load",
+        () => {
+
+            console.log(
+                "MathJax ready:",
+                !!(
+                    window.MathJax &&
+                    typeof window.MathJax.typesetPromise === "function"
+                )
+            );
+
+        }
+    );
+
+
+    if (userInput) {
+
+        userInput.focus();
+
+    }
+
+}
+
+
+/* =========================================================
+   START
+========================================================= */
+
+initialize();
